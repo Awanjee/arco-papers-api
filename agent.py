@@ -70,21 +70,13 @@ def build_vectorstore():
     from langchain_text_splitters import RecursiveCharacterTextSplitter  # type: ignore
 
     embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
-    persist_path = "./chroma_arco"
-
-    if os.path.exists(persist_path):
-        return Chroma(
-            persist_directory=persist_path,
-            embedding_function=embeddings,
-        )
-
     splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
     chunks = splitter.create_documents(PRODUCT_DOCS)
     return Chroma.from_documents(
         chunks,
         embeddings,
-        persist_directory=persist_path,
     )
+    # No persist_directory — stays in memory
 
 
 @tool
