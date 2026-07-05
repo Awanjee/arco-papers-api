@@ -1,5 +1,8 @@
 from dotenv import load_dotenv
+
 load_dotenv()
+
+import uuid
 
 from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.responses import FileResponse, JSONResponse
@@ -25,6 +28,7 @@ from schemas import (
 )
 
 CORS_HEADERS = {"Access-Control-Allow-Origin": "*"}
+MAX_SESSIONS = 500
 
 app = FastAPI(title="iStatis AI Assistant")
 app.add_middleware(
@@ -40,10 +44,14 @@ app.include_router(extraction_router)
 async def unhandled_exception_handler(request: Request, exc: Exception):
     """Ensure CORS headers are present even on unhandled 500s."""
     import traceback
+
     traceback.print_exc()  # still logs to uvicorn terminal
     return JSONResponse(
         status_code=500,
-        content={"detail": str(exc)},
+        content={
+            "detail": "Internal server error",
+            "reference": uuid.uuid4().hex[:8],
+        },
         headers=CORS_HEADERS,
     )
 
@@ -57,6 +65,7 @@ async def http_exception_handler(request: Request, exc: HTTPException):
         headers=CORS_HEADERS,
     )
 
+
 # Serve static files (our HTML frontend)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
@@ -66,7 +75,10 @@ sessions: dict = {}
 
 
 @app.post("/quote", response_model=QuoteResponse)
-async def quote_endpoint(request: QuoteRequest):
+async def quote_endpoint(
+    request: QuoteRequest,
+    _user: dict = Depends(get_current_user),
+):
     print(f"Received request: {request}")
     try:
         quote = await generate_quote(
@@ -111,7 +123,13 @@ async def root():
 
 
 @app.post("/chat", response_model=MessageResponse)
-async def chat_endpoint(request: MessageRequest):
+async def chat_endpoint(
+    request: MessageRequest,
+    _user: dict = Depends(get_current_user),
+):
+    if len(sessions) >= MAX_SESSIONS and request.session_id not in sessions:
+        oldest = next(iter(sessions))
+        del sessions[oldest]
     # Get or create session history
     if request.session_id not in sessions:
         sessions[request.session_id] = []

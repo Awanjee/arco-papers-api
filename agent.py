@@ -27,6 +27,8 @@ from langchain_chroma import Chroma
 from langchain_core.tools.retriever import (
     create_retriever_tool,
 )
+from pathlib import Path
+
 from dotenv import load_dotenv
 from database import (
     get_products_with_pricing,
@@ -35,6 +37,9 @@ from database import (
 )
 
 load_dotenv()
+
+CHROMA_DIR = Path(__file__).parent / "chroma_istatis"
+CHROMA_COLLECTION = "istatis_products"
 
 
 def build_product_docs() -> list[str]:
@@ -90,12 +95,24 @@ def build_product_docs() -> list[str]:
 
 
 def build_vectorstore():
-    """Build vector store from database products."""
+    """Build or load persisted vector store from database products."""
     embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
+    if CHROMA_DIR.exists() and any(CHROMA_DIR.iterdir()):
+        return Chroma(
+            persist_directory=str(CHROMA_DIR),
+            embedding_function=embeddings,
+            collection_name=CHROMA_COLLECTION,
+        )
+
     docs = build_product_docs()
     splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
     chunks = splitter.create_documents(docs)
-    return Chroma.from_documents(chunks, embeddings)
+    return Chroma.from_documents(
+        chunks,
+        embeddings,
+        persist_directory=str(CHROMA_DIR),
+        collection_name=CHROMA_COLLECTION,
+    )
 
 
 # ── Tools ────────────────────────────────────────────────

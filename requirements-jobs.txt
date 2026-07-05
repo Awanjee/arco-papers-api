@@ -1,0 +1,4 @@
+# Background jobs and local tools (not required for the Render web API).
+# Install with: pip install -r requirements-jobs.txt
+APScheduler==3.11.2
+playwright==1.59.0

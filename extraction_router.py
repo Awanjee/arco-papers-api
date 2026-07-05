@@ -8,27 +8,25 @@ import json
 from datetime import datetime
 from typing import Optional
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from openai import AsyncOpenAI
 from pydantic import BaseModel
 
+from auth import get_current_user
 from database import supabase
-
-# Single-tenant: hardcoded UUID for iStatis internal use.
-# Replace with a real tenants lookup if/when multi-tenant is needed.
-_ISTATIS_TENANT_ID = "00000000-0000-0000-0000-000000000001"
-
-
-def get_tenant_id() -> str:
-    return _ISTATIS_TENANT_ID
+from config import get_tenant_id
 
 router = APIRouter(prefix="/extract", tags=["extraction"])
 _openai = AsyncOpenAI()
+
+_ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp"}
+_MAX_IMAGE_BYTES = 8_000_000
 
 
 # ---------------------------------------------------------------------------
 # Prompt — domain-aware, year injected at call time
 # ---------------------------------------------------------------------------
+
 
 def _system_prompt() -> str:
     year = datetime.now().year
@@ -100,6 +98,7 @@ Return this exact JSON structure (use null for fields not present in the image):
 # Core extraction
 # ---------------------------------------------------------------------------
 
+
 async def _run_extraction(image_bytes: bytes, content_type: str) -> dict:
     b64 = base64.standard_b64encode(image_bytes).decode("utf-8")
     response = await _openai.chat.completions.create(
@@ -135,6 +134,7 @@ async def _run_extraction(image_bytes: bytes, content_type: str) -> dict:
 # Request / Response models
 # ---------------------------------------------------------------------------
 
+
 class LineItemIn(BaseModel):
     product_code: Optional[str] = None
     description: Optional[str] = None
@@ -150,7 +150,9 @@ class ConfirmRequest(BaseModel):
     party_name_urdu: Optional[str] = None
     transaction_date: Optional[str] = None  # "DD/MM/YY" or "DD/MM/YYYY"
     document_type: Optional[str] = None
-    transaction_type: Optional[str] = "sale"  # sale | payment_received | purchase | expense
+    transaction_type: Optional[str] = (
+        "sale"  # sale | payment_received | purchase | expense
+    )
     total_amount: Optional[float] = None
     line_items: list[LineItemIn] = []
     notes: Optional[str] = None
@@ -160,21 +162,33 @@ class ConfirmRequest(BaseModel):
 # Routes
 # ---------------------------------------------------------------------------
 
+
 @router.post("")
-async def extract_document(file: UploadFile = File(...)):
+async def extract_document(
+    file: UploadFile = File(...),
+    _user: dict = Depends(get_current_user),
+):
     """
     Upload an image -> GPT-4o extraction -> stored in document_extractions.
     Returns extraction_id + data for the review screen.
     """
     content_type = file.content_type or "image/jpeg"
+    if content_type not in _ALLOWED_IMAGE_TYPES:
+        raise HTTPException(
+            422, detail="Unsupported image type. Use JPEG, PNG, or WebP."
+        )
     image_bytes = await file.read()
+    if len(image_bytes) > _MAX_IMAGE_BYTES:
+        raise HTTPException(422, detail="Image too large. Maximum size is 8 MB.")
 
     try:
         data = await _run_extraction(image_bytes, content_type)
     except json.JSONDecodeError as exc:
-        raise HTTPException(422, detail=f"Extraction returned invalid JSON: {exc}") from exc
+        raise HTTPException(
+            422, detail=f"Extraction returned invalid JSON: {exc}"
+        ) from exc
     except Exception as exc:
-        raise HTTPException(502, detail=f"GPT-4o error: {exc}") from exc
+        raise HTTPException(502, detail="Extraction service unavailable") from exc
 
     tenant_id = get_tenant_id()
     low_fields: list[str] = data.get("low_confidence_fields") or []
@@ -182,17 +196,19 @@ async def extract_document(file: UploadFile = File(...)):
 
     row = (
         supabase.table("document_extractions")
-        .insert({
-            "tenant_id": tenant_id,
-            "image_filename": file.filename,
-            "raw_extraction": data,
-            "document_type": data.get("document_type"),
-            "overall_confidence": data.get("overall_confidence"),
-            "has_warnings": has_warnings,
-            "low_confidence_fields": low_fields,
-            "unreadable_sections": data.get("unreadable_sections"),
-            "status": "pending_review",
-        })
+        .insert(
+            {
+                "tenant_id": tenant_id,
+                "image_filename": file.filename,
+                "raw_extraction": data,
+                "document_type": data.get("document_type"),
+                "overall_confidence": data.get("overall_confidence"),
+                "has_warnings": has_warnings,
+                "low_confidence_fields": low_fields,
+                "unreadable_sections": data.get("unreadable_sections"),
+                "status": "pending_review",
+            }
+        )
         .execute()
     )
     extraction_id = row.data[0]["id"]
@@ -205,108 +221,154 @@ async def extract_document(file: UploadFile = File(...)):
 
 
 @router.post("/{extraction_id}/confirm")
-async def confirm_extraction(extraction_id: str, body: ConfirmRequest):
+async def confirm_extraction(
+    extraction_id: str,
+    body: ConfirmRequest,
+    _user: dict = Depends(get_current_user),
+):
     """
     User approved the extraction (possibly after editing).
     Creates/matches party, saves transaction + line items, marks extraction approved.
     """
     tenant_id = get_tenant_id()
+    transaction_id = None
 
-    # --- Party matching ---
-    party_id = None
-    if body.party_name or body.party_name_urdu:
-        search = (body.party_name or body.party_name_urdu or "").strip().lower()
+    try:
+        # --- Party matching ---
+        party_id = None
+        if body.party_name or body.party_name_urdu:
+            search = (body.party_name or body.party_name_urdu or "").strip().lower()
 
-        alias_hit = (
-            supabase.table("party_aliases")
-            .select("party_id")
-            .ilike("alias", search)
-            .limit(1)
-            .execute()
-        )
-
-        if alias_hit.data:
-            party_id = alias_hit.data[0]["party_id"]
-        else:
-            party_row = (
-                supabase.table("parties")
-                .insert({
-                    "tenant_id": tenant_id,
-                    "name_roman": body.party_name or search,
-                    "name_urdu": body.party_name_urdu,
-                    "party_type": "unknown",
-                })
+            alias_hit = (
+                supabase.table("party_aliases")
+                .select("party_id")
+                .ilike("alias", search)
+                .limit(1)
                 .execute()
             )
-            party_id = party_row.data[0]["id"]
 
-            aliases = []
-            if body.party_name:
-                aliases.append({"party_id": party_id, "alias": body.party_name.lower()})
-            if body.party_name_urdu:
-                aliases.append({"party_id": party_id, "alias": body.party_name_urdu})
-            if aliases:
-                supabase.table("party_aliases").insert(aliases).execute()
+            if alias_hit.data:
+                party_id = alias_hit.data[0]["party_id"]
+            else:
+                party_row = (
+                    supabase.table("parties")
+                    .insert(
+                        {
+                            "tenant_id": tenant_id,
+                            "name_roman": body.party_name or search,
+                            "name_urdu": body.party_name_urdu,
+                            "party_type": "unknown",
+                        }
+                    )
+                    .execute()
+                )
+                party_id = party_row.data[0]["id"]
 
-    # --- Date parsing ---
-    tx_date = None
-    if body.transaction_date:
-        for fmt in ("%d/%m/%y", "%d-%m-%y", "%d/%m/%Y", "%d-%m-%Y"):
-            try:
-                tx_date = datetime.strptime(body.transaction_date, fmt).date().isoformat()
-                break
-            except ValueError:
-                continue
+                aliases = []
+                if body.party_name:
+                    aliases.append(
+                        {"party_id": party_id, "alias": body.party_name.lower()}
+                    )
+                if body.party_name_urdu:
+                    aliases.append(
+                        {"party_id": party_id, "alias": body.party_name_urdu}
+                    )
+                if aliases:
+                    supabase.table("party_aliases").insert(aliases).execute()
 
-    # --- Transaction ---
-    tx_row = (
-        supabase.table("transactions")
-        .insert({
-            "tenant_id": tenant_id,
-            "extraction_id": extraction_id,
-            "party_id": party_id,
-            "transaction_date": tx_date,
-            "document_type": body.document_type,
-            "transaction_type": body.transaction_type or "sale",
-            "total_amount": body.total_amount,
-            "notes": body.notes,
-        })
-        .execute()
-    )
-    transaction_id = tx_row.data[0]["id"]
+        # --- Date parsing ---
+        tx_date = None
+        if body.transaction_date:
+            for fmt in ("%d/%m/%y", "%d-%m-%y", "%d/%m/%Y", "%d-%m-%Y"):
+                try:
+                    tx_date = (
+                        datetime.strptime(body.transaction_date, fmt).date().isoformat()
+                    )
+                    break
+                except ValueError:
+                    continue
 
-    # --- Line items ---
-    if body.line_items:
-        supabase.table("transaction_line_items").insert([
+        # --- Transaction ---
+        tx_row = (
+            supabase.table("transactions")
+            .insert(
+                {
+                    "tenant_id": tenant_id,
+                    "extraction_id": extraction_id,
+                    "party_id": party_id,
+                    "transaction_date": tx_date,
+                    "document_type": body.document_type,
+                    "transaction_type": body.transaction_type or "sale",
+                    "total_amount": body.total_amount,
+                    "notes": body.notes,
+                }
+            )
+            .execute()
+        )
+        transaction_id = tx_row.data[0]["id"]
+
+        # --- Line items ---
+        if body.line_items:
+            supabase.table("transaction_line_items").insert(
+                [
+                    {
+                        "transaction_id": transaction_id,
+                        "product_code": item.product_code,
+                        "description": item.description,
+                        "quantity": item.quantity,
+                        "unit_price": item.unit_price,
+                        "amount": item.amount,
+                        "confidence": item.confidence,
+                        "notes": item.notes,
+                    }
+                    for item in body.line_items
+                ]
+            ).execute()
+
+        # --- Mark approved ---
+        supabase.table("document_extractions").update(
             {
-                "transaction_id": transaction_id,
-                "product_code": item.product_code,
-                "description": item.description,
-                "quantity": item.quantity,
-                "unit_price": item.unit_price,
-                "amount": item.amount,
-                "confidence": item.confidence,
-                "notes": item.notes,
+                "status": "approved",
+                "reviewed_at": datetime.now().isoformat(),
             }
-            for item in body.line_items
-        ]).execute()
+        ).eq("id", extraction_id).execute()
 
-    # --- Mark approved ---
-    supabase.table("document_extractions").update({
-        "status": "approved",
-        "reviewed_at": datetime.now().isoformat(),
-    }).eq("id", extraction_id).execute()
+    except Exception as exc:
+        if transaction_id:
+            supabase.table("transaction_line_items").delete().eq(
+                "transaction_id", transaction_id
+            ).execute()
+            supabase.table("transactions").delete().eq("id", transaction_id).execute()
+        raise HTTPException(500, detail="Could not save transaction") from exc
 
     return {"transaction_id": transaction_id, "party_id": party_id}
 
 
+@router.post("/{extraction_id}/reject")
+async def reject_extraction(
+    extraction_id: str,
+    _user: dict = Depends(get_current_user),
+):
+    """Mark extraction rejected without creating a transaction."""
+    tenant_id = get_tenant_id()
+    supabase.table("document_extractions").update(
+        {
+            "status": "rejected",
+            "reviewed_at": datetime.now().isoformat(),
+        }
+    ).eq("id", extraction_id).eq("tenant_id", tenant_id).execute()
+    return {"status": "rejected"}
+
+
 @router.get("/pending")
-async def list_pending():
+async def list_pending(_user: dict = Depends(get_current_user)):
     """Extractions waiting for user review."""
     tenant_id = get_tenant_id()
     rows = (
         supabase.table("document_extractions")
-        .select("id, image_filename, document_type, overall_confidence, has_warnings, created_at")
+        .select(
+            "id, image_filename, document_type, overall_confidence, has_warnings, created_at"
+        )
         .eq("tenant_id", tenant_id)
         .eq("status", "pending_review")
         .order("created_at", desc=True)
@@ -316,7 +378,10 @@ async def list_pending():
 
 
 @router.get("/transactions")
-async def list_transactions(party_id: Optional[str] = None):
+async def list_transactions(
+    party_id: Optional[str] = None,
+    _user: dict = Depends(get_current_user),
+):
     """Confirmed transactions with party info, newest first.
     Optional ?party_id=UUID to filter by party."""
     tenant_id = get_tenant_id()
@@ -337,7 +402,10 @@ async def list_transactions(party_id: Optional[str] = None):
 
 
 @router.get("/transactions/{transaction_id}")
-async def get_transaction_detail(transaction_id: str):
+async def get_transaction_detail(
+    transaction_id: str,
+    _user: dict = Depends(get_current_user),
+):
     """Single transaction with party info and all line items."""
     row = (
         supabase.table("transactions")
@@ -358,7 +426,7 @@ async def get_transaction_detail(transaction_id: str):
 
 
 @router.get("/parties/balances")
-async def get_party_balances():
+async def get_party_balances(_user: dict = Depends(get_current_user)):
     """
     Per-party running balance, sorted by outstanding amount descending.
     Balance = SUM(sales) - SUM(payments_received).
@@ -378,16 +446,19 @@ async def get_party_balances():
 
     # Aggregate in Python — simple enough at this data volume
     from collections import defaultdict
-    balances: dict = defaultdict(lambda: {
-        "party_id": None,
-        "name_roman": None,
-        "name_urdu": None,
-        "balance": 0.0,
-        "total_sales": 0.0,
-        "total_payments": 0.0,
-        "transaction_count": 0,
-        "last_transaction_date": None,
-    })
+
+    balances: dict = defaultdict(
+        lambda: {
+            "party_id": None,
+            "name_roman": None,
+            "name_urdu": None,
+            "balance": 0.0,
+            "total_sales": 0.0,
+            "total_payments": 0.0,
+            "transaction_count": 0,
+            "last_transaction_date": None,
+        }
+    )
 
     for row in rows.data:
         pid = row["party_id"]
@@ -411,7 +482,9 @@ async def get_party_balances():
         # expense doesn't affect party balance
 
         date = row.get("transaction_date")
-        if date and (b["last_transaction_date"] is None or date > b["last_transaction_date"]):
+        if date and (
+            b["last_transaction_date"] is None or date > b["last_transaction_date"]
+        ):
             b["last_transaction_date"] = date
 
     result = sorted(balances.values(), key=lambda x: x["balance"], reverse=True)

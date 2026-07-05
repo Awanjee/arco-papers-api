@@ -40,17 +40,25 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from dotenv import load_dotenv
+
 load_dotenv(Path(__file__).parent.parent / ".env")
 
 from database import supabase
 
-TENANT_ID = "00000000-0000-0000-0000-000000000001"
+from config import ISTATIS_TENANT_ID as TENANT_ID
+
 OUTPUT_FILE = Path(__file__).parent / "dataset.json"
 COVERAGE_FILE = Path(__file__).parent / "coverage.txt"
 
 # Document types the system handles — we track coverage across all five
-DOC_TYPES = ["sales_slip", "price_list", "distribution_record", "account_ledger",
-             "calculation_note", "unknown"]
+DOC_TYPES = [
+    "sales_slip",
+    "price_list",
+    "distribution_record",
+    "account_ledger",
+    "calculation_note",
+    "unknown",
+]
 
 
 def fetch_approved_extractions():
@@ -63,8 +71,10 @@ def fetch_approved_extractions():
     # Step 1: get all approved extractions for our tenant
     extractions = (
         supabase.table("document_extractions")
-        .select("id, image_filename, document_type, overall_confidence, "
-                "raw_extraction, created_at, has_warnings, low_confidence_fields")
+        .select(
+            "id, image_filename, document_type, overall_confidence, "
+            "raw_extraction, created_at, has_warnings, low_confidence_fields"
+        )
         .eq("tenant_id", TENANT_ID)
         .eq("status", "approved")
         .order("created_at", desc=False)
@@ -85,9 +95,11 @@ def fetch_approved_extractions():
         # Get the transaction that was created from this extraction
         tx_result = (
             supabase.table("transactions")
-            .select("id, transaction_date, document_type, transaction_type, "
-                    "total_amount, notes, created_at, "
-                    "parties(id, name_roman, name_urdu)")
+            .select(
+                "id, transaction_date, document_type, transaction_type, "
+                "total_amount, notes, created_at, "
+                "parties(id, name_roman, name_urdu)"
+            )
             .eq("extraction_id", extraction_id)
             .eq("tenant_id", TENANT_ID)
             .limit(1)
@@ -105,7 +117,9 @@ def fetch_approved_extractions():
         # Get line items for this transaction
         items_result = (
             supabase.table("transaction_line_items")
-            .select("product_code, description, quantity, unit_price, amount, confidence, notes")
+            .select(
+                "product_code, description, quantity, unit_price, amount, confidence, notes"
+            )
             .eq("transaction_id", tx["id"])
             .execute()
         )
@@ -126,7 +140,7 @@ def fetch_approved_extractions():
         # Build the ground truth expected values
         expected = {
             "document_type": tx.get("document_type") or ext.get("document_type"),
-            "date": tx.get("transaction_date"),   # ISO format from DB
+            "date": tx.get("transaction_date"),  # ISO format from DB
             "party_name": party.get("name_roman"),
             "party_name_urdu": party.get("name_urdu"),
             "grand_total": tx.get("total_amount"),
@@ -166,8 +180,10 @@ def fetch_approved_extractions():
         cases.append(case)
         status = "EDITED" if had_edits else "clean"
         party_display = party.get("name_roman") or party.get("name_urdu") or "Unknown"
-        print(f"  [{status}] {ext['image_filename'] or extraction_id[:8]} "
-              f"— {expected['document_type']} — {party_display}")
+        print(
+            f"  [{status}] {ext['image_filename'] or extraction_id[:8]} "
+            f"— {expected['document_type']} — {party_display}"
+        )
 
     return cases
 
@@ -248,7 +264,11 @@ def write_coverage_report(cases: list, coverage: dict):
         "RECOMMENDATION:",
     ]
 
-    gaps = [dt for dt, count in coverage.items() if count < min_recommended and dt != "unknown"]
+    gaps = [
+        dt
+        for dt, count in coverage.items()
+        if count < min_recommended and dt != "unknown"
+    ]
     if gaps:
         lines.append(f"  Add more cases for: {', '.join(gaps)}")
         lines.append("  Aim for 4-5 per type minimum before running evals.")
@@ -297,8 +317,10 @@ def main():
         json.dump(dataset, f, indent=2, ensure_ascii=False, default=str)
 
     print(f"\nDataset written to: {OUTPUT_FILE}")
-    print(f"  {len(cases)} cases, "
-          f"{sum(1 for c in cases if c['metadata']['had_edits'])} with edits")
+    print(
+        f"  {len(cases)} cases, "
+        f"{sum(1 for c in cases if c['metadata']['had_edits'])} with edits"
+    )
 
     write_coverage_report(cases, coverage)
 

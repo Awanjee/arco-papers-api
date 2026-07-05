@@ -2,24 +2,14 @@ from supabase import create_client, Client
 from dotenv import load_dotenv
 import os
 
+from config import get_tenant_id
+
 load_dotenv()
 
 url = os.getenv("SUPABASE_URL")
 key = os.getenv("SUPABASE_KEY")
 
 supabase: Client = create_client(url, key)
-
-
-def get_tenant_id() -> str:
-    """Get iStatis tenant ID."""
-    result = (
-        supabase.table("tenants")
-        .select("id")
-        .eq("name", "iStatis")
-        .single()
-        .execute()
-    )
-    return result.data["id"]
 
 
 def get_products_with_pricing() -> list[dict]:
