@@ -7,7 +7,17 @@ from config import get_tenant_id
 load_dotenv()
 
 url = os.getenv("SUPABASE_URL")
-key = os.getenv("SUPABASE_KEY")
+key = os.getenv("SUPABASE_SERVICE_KEY")
+
+if not key:
+    raise RuntimeError(
+        "SUPABASE_SERVICE_KEY is not set. As of migration 003, RLS is enabled "
+        "on all public tables, so the anon key (SUPABASE_KEY) can no longer "
+        "read or write anything. Get the service_role key from Supabase "
+        "dashboard > Settings > API and set SUPABASE_SERVICE_KEY in your "
+        "environment (.env locally, Render env vars in production). Never "
+        "expose this key to a client app, it bypasses RLS entirely."
+    )
 
 supabase: Client = create_client(url, key)
 

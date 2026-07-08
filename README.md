@@ -79,7 +79,7 @@ Copy `.env.example` to `.env` and set at minimum:
 ```env
 OPENAI_API_KEY=
 SUPABASE_URL=
-SUPABASE_KEY=
+SUPABASE_SERVICE_KEY=
 SUPABASE_JWT_SECRET=
 
 # Quote emails (optional)
