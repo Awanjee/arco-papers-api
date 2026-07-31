@@ -12,7 +12,7 @@ working in production.
   - Firebase: https://istatis-papers-app-6b721.web.app
   - GitHub: github.com/Awanjee/istatis-papers-app
 - API: `C:\Usama\Projects\istatis-papers`
-  - Render: https://istatis-papers-api.onrender.com
+  - Render: https://arco-papers-api.onrender.com (Render service name differs from the GitHub repo name)
   - GitHub: github.com/Awanjee/istatis-papers-api
 
 ## Tech stack

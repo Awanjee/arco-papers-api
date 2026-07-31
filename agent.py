@@ -59,17 +59,11 @@ def build_product_docs() -> list[str]:
     for cat_name, cat_products in categories.items():
         lines = [f"iStatis - {cat_name}:"]
         for p in cat_products:
-            tiers = sorted(
-                p["pricing_tiers"],
-                key=lambda x: x["min_quantity"],
-                reverse=True,
-            )
-            tier_str = ", ".join(
-                f"PKR {t['price_per_unit']}/unit " f"({t['label']})" for t in tiers
-            )
+            # DEMO MODE (2026-07-31): pricing tiers deliberately excluded
+            # from RAG docs so the assistant cannot surface unit prices.
+            # Revert by restoring the tier_str block from git history.
             lines.append(
-                f"{p['name']}: {tier_str}. "
-                f"Min order {p['min_order']}. "
+                f"{p['name']}: Min order {p['min_order']}. "
                 f"{p['description']}"
             )
         docs.append("\n".join(lines))
@@ -124,26 +118,19 @@ def get_pricing_tier(
     quantity: int,
 ) -> str:
     """
-    Get the correct price per unit for a product
-    based on quantity. Use for any pricing question.
+    Use for any pricing question. Does not
+    disclose unit pricing during demo mode.
     product_name: name of the product e.g.
     'C4 Envelope', 'A4 Paper 70gsm'
     quantity: number of units requested
     """
-    result = get_pricing_for_product(product_name, quantity)
-
-    if not result:
-        return (
-            f"Product '{product_name}' not found. "
-            "Please check the product catalogue."
-        )
-
+    # DEMO MODE (2026-07-31): deliberately does not call
+    # get_pricing_for_product or return numeric pricing.
+    # Revert to the real lookup from git history when done.
     return (
-        f"{result['product_name']} x "
-        f"{result['quantity']:,} {result['unit']} "
-        f"= PKR {result['price_per_unit']} per unit "
-        f"(tier: {result['tier_label']}) | "
-        f"Total: PKR {result['total']:,.0f}"
+        f"Pricing for {product_name} depends on volume "
+        "and current mill rates. I will have our sales "
+        "team follow up with a formal quote."
     )
 
 
@@ -154,16 +141,16 @@ def calculate_order_cost(
     discount_pct: float = 0,
 ) -> str:
     """
-    Calculate total order cost with optional
-    discount. Use when customer needs a final quote.
+    Use when a customer asks for a final order total.
+    Does not disclose numeric pricing during demo mode.
     """
-    subtotal = unit_price_pkr * quantity
-    discount = subtotal * (discount_pct / 100)
-    total = subtotal - discount
+    # DEMO MODE (2026-07-31): deliberately does not
+    # compute or return a numeric total. Revert to the
+    # real calculation from git history when done.
     return (
-        f"Subtotal: PKR {subtotal:,.0f} | "
-        f"Discount: PKR {discount:,.0f} | "
-        f"Total: PKR {total:,.0f}"
+        "I do not have final order totals available "
+        "right now. I will have our sales team send "
+        "over a formal quote with the full breakdown."
     )
 
 
@@ -194,10 +181,15 @@ def build_agent():
                 "You are a professional sales assistant "
                 "for iStatis, a paper manufacturer "
                 "in Islamabad, Pakistan. Be concise and "
-                "helpful. Always use tools for pricing. "
-                "Quote prices in PKR only. "
-                "If unsure, say you will check and "
-                "follow up.",
+                "helpful. Do not state or estimate any "
+                "numeric price, rate, or PKR figure for "
+                "any product, even if quoted in the "
+                "conversation history or asked directly. "
+                "If asked about pricing, say pricing "
+                "depends on volume and that our sales "
+                "team will follow up with a formal quote. "
+                "If unsure about anything else, say you "
+                "will check and follow up.",
             ),
             MessagesPlaceholder("history"),
             ("human", "{input}"),

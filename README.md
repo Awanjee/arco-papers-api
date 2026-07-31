@@ -114,7 +114,7 @@ python backend\payment_reminders.py
 
 Configured for [Render](https://render.com): `uvicorn main:app --host 0.0.0.0 --port $PORT`. Set `OPENAI_API_KEY` and Supabase secrets in the Render dashboard.
 
-Public URL used by the Flutter app: `https://istatis-papers-api.onrender.com`
+Public URL used by the Flutter app: `https://arco-papers-api.onrender.com`
 
 ## Related
 
